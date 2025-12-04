@@ -302,12 +302,26 @@ extractRouter.post(
 
       // Set proper headers for XLSX file
       const filename = `drive-files-${Date.now()}.xlsx`;
+      
+      // Set Content-Type first (must be XLSX MIME type)
       res.setHeader(
         "Content-Type",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      
+      // Set Content-Disposition with proper encoding for filename
+      // Use both filename and filename* for maximum browser compatibility
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+      );
+      
       res.setHeader("Content-Length", xlsxBuffer.length.toString());
+      
+      // Ensure no caching that might interfere
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
 
       // Send the file
       return res.status(200).send(xlsxBuffer);
