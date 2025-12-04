@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import type { ErrorResponse, ExtractFilesResponse, DriveFile } from "./fileTypes";
 import {
   extractFolderId,
@@ -233,6 +234,88 @@ extractRouter.post(
       const errorBody = buildErrorResponse(
         "INTERNAL_ERROR",
         "Unexpected error while scraping the folder."
+      );
+      return res.status(500).json(errorBody);
+    }
+  }
+);
+
+interface ExportRequestBody {
+  files: DriveFile[];
+  folderId?: string;
+}
+
+extractRouter.post(
+  "/export",
+  async (req: Request<unknown, unknown, ExportRequestBody>, res: Response) => {
+    const { files } = req.body;
+
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      const errorBody = buildErrorResponse(
+        "INVALID_FOLDER_URL",
+        "Request body must include a 'files' array with at least one file."
+      );
+      return res.status(400).json(errorBody);
+    }
+
+    try {
+      // Create a new workbook
+      const workbook = XLSX.utils.book_new();
+
+      // Prepare data for the worksheet
+      // Headers
+      const headers = ["Name", "ID", "MIME Type", "View URL", "Download URL"];
+      const data = [headers];
+
+      // Add file rows
+      for (const file of files) {
+        data.push([
+          file.name,
+          file.id,
+          file.mimeType,
+          file.viewUrl,
+          file.downloadUrl,
+        ]);
+      }
+
+      // Create worksheet from data
+      const worksheet = XLSX.utils.aoa_to_sheet(data);
+
+      // Set column widths for better readability
+      worksheet["!cols"] = [
+        { wch: 30 }, // Name
+        { wch: 40 }, // ID
+        { wch: 50 }, // MIME Type
+        { wch: 60 }, // View URL
+        { wch: 60 }, // Download URL
+      ];
+
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Files");
+
+      // Generate XLSX file as buffer
+      const xlsxBuffer = XLSX.write(workbook, {
+        type: "buffer",
+        bookType: "xlsx",
+        cellStyles: true,
+      });
+
+      // Set proper headers for XLSX file
+      const filename = `drive-files-${Date.now()}.xlsx`;
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Length", xlsxBuffer.length.toString());
+
+      // Send the file
+      return res.status(200).send(xlsxBuffer);
+    } catch (error: unknown) {
+      console.error("[extractRoute] Excel export error:", error);
+      const errorBody = buildErrorResponse(
+        "INTERNAL_ERROR",
+        "Unexpected error while generating Excel file."
       );
       return res.status(500).json(errorBody);
     }
