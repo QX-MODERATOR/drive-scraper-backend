@@ -141,6 +141,68 @@ function hasFileExtension(name: string): boolean {
 }
 
 // ============================================================================
+// HELPER: Extract folder names from raw response using the pattern
+// Pattern: \x22<folder_name>\x22,\x22application\/vnd.google-apps.folder\x22,
+// ============================================================================
+
+// ============================================================================
+// HELPER: Extract folder names from raw response using the pattern
+// Pattern: \x22<folder_name>\x22,\x22application\/vnd.google-apps.folder\x22,
+// ============================================================================
+
+function extractFolderNamesFromRawResponse(rawResponse: string): Set<string> {
+  const folderNames = new Set<string>();
+
+  // The folder names are in the window['_DRIVE_ivd'] script tag
+  const driveIvdMatch =
+    /window\['_DRIVE_ivd'\]\s*=\s*['"]([^'"]+)['"]/s.exec(rawResponse);
+
+  if (!driveIvdMatch || !driveIvdMatch[1]) {
+    console.log(
+      `[publicScrape] Could not find window['_DRIVE_ivd'] in response`
+    );
+    return folderNames;
+  }
+
+  const driveIvdContent = driveIvdMatch[1];
+
+  // Match: \x22<folder_name>\x22,\x22application\/vnd
+  // Search for the exact pattern \x22application\/vnd and extract the folder name before it
+  const folderPattern =
+    /\\x22([^\\]+?)\\x22,\\x22application\\\/vnd/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = folderPattern.exec(driveIvdContent)) !== null) {
+    let folderName = match[1];
+
+    if (!folderName) continue;
+
+    folderName = folderName.trim();
+    if (!folderName) continue;
+
+    // If the folder field has "name, someId", keep only the name before the comma.
+    const commaIndex = folderName.indexOf(",");
+    if (commaIndex > 0) {
+      const beforeComma = folderName.substring(0, commaIndex).trim();
+      if (beforeComma.length > 0) {
+        folderName = beforeComma;
+      }
+    }
+
+    if (folderName.length > 0) {
+      folderNames.add(folderName);
+    }
+  }
+
+  console.log(
+    `[publicScrape] Extracted ${folderNames.size} folder names from raw response:`,
+    Array.from(folderNames)
+  );
+
+  return folderNames;
+}
+
+// ============================================================================
 // HELPER: Parse IDs from a block of HTML using data-id="..." regex
 // ============================================================================
 
@@ -190,7 +252,10 @@ function parseTitleFromHtml(html: string): string | null {
 // HELPER: Verify folder IDs and return DriveFile[] for valid folders
 // ============================================================================
 
-async function verifyFolderIds(ids: string[]): Promise<{
+async function verifyFolderIds(
+  ids: string[],
+  folderNamesFromRawResponse: Set<string>
+): Promise<{
   validFolders: DriveFile[];
   invalidIds: string[];
   detectedFiles: DriveFile[]; // Items that look like files based on extension
@@ -214,8 +279,13 @@ async function verifyFolderIds(ids: string[]): Promise<{
       if (response.status >= 200 && response.status < 300) {
         const title = parseTitleFromHtml(response.data);
         if (title && title.length > 0) {
+          // Check if title is in the folder names extracted from raw response
+          // This is the reliable way to detect folders even when MIME type detection fails
+          const isFolderFromRawResponse = folderNamesFromRawResponse.has(title);
+          
           // Check if the title has a file extension - if so, it's actually a file!
-          if (hasFileExtension(title)) {
+          // UNLESS it's explicitly marked as a folder in the raw response
+          if (hasFileExtension(title) && !isFolderFromRawResponse) {
             const mimeType = inferMimeTypeFromName(title);
             const fileViewUrl = `https://drive.google.com/file/d/${id}/view`;
             detectedFiles.push({
@@ -227,7 +297,7 @@ async function verifyFolderIds(ids: string[]): Promise<{
             });
             console.log(`[publicScrape] ✓ Detected as FILE by extension: "${title}" (${id})`);
           } else {
-            // No file extension - treat as folder
+            // Either no file extension OR explicitly marked as folder in raw response
             validFolders.push({
               id,
               name: title,
@@ -235,7 +305,11 @@ async function verifyFolderIds(ids: string[]): Promise<{
               viewUrl: folderUrl,
               downloadUrl: folderUrl, // Folders don't have a download URL, use view URL
             });
-            console.log(`[publicScrape] ✓ Folder verified: "${title}" (${id})`);
+            if (isFolderFromRawResponse) {
+              console.log(`[publicScrape] ✓ Folder verified (from raw response pattern): "${title}" (${id})`);
+            } else {
+              console.log(`[publicScrape] ✓ Folder verified: "${title}" (${id})`);
+            }
           }
         } else {
           console.log(
@@ -266,7 +340,10 @@ async function verifyFolderIds(ids: string[]): Promise<{
 // HELPER: Verify file IDs and return DriveFile[] for valid files
 // ============================================================================
 
-async function verifyFileIds(ids: string[]): Promise<DriveFile[]> {
+async function verifyFileIds(
+  ids: string[],
+  folderNamesFromRawResponse: Set<string>
+): Promise<DriveFile[]> {
   const validFiles: DriveFile[] = [];
 
   console.log(`[publicScrape] Verifying ${ids.length} potential file IDs...`);
@@ -284,6 +361,12 @@ async function verifyFileIds(ids: string[]): Promise<DriveFile[]> {
       if (response.status >= 200 && response.status < 300) {
         const title = parseTitleFromHtml(response.data);
         if (title && title.length > 0) {
+          // Skip if this is actually a folder according to the raw response pattern
+          if (folderNamesFromRawResponse.has(title)) {
+            console.log(`[publicScrape] ⚠ Skipping "${title}" (${id}) - detected as folder from raw response pattern`);
+            continue;
+          }
+          
           const mimeType = inferMimeTypeFromName(title);
           validFiles.push({
             id,
@@ -442,7 +525,13 @@ export async function scrapePublicFolder(
   }
 
   // -------------------------------------------------------------------------
-  // STEP 2: Find the big script block
+  // STEP 2: Extract folder names from raw response using the reliable pattern
+  // Pattern: \x22<folder_name>\x22,\x22application\/vnd.google-apps.folder\x22,
+  // -------------------------------------------------------------------------
+  const folderNamesFromRawResponse = extractFolderNamesFromRawResponse(html);
+
+  // -------------------------------------------------------------------------
+  // STEP 3: Find the big script block
   // -------------------------------------------------------------------------
   const blockResult = findBigScriptBlock(html);
 
@@ -456,7 +545,7 @@ export async function scrapePublicFolder(
   const { bigScriptBlock, bigBlockEndIndex } = blockResult;
 
   // -------------------------------------------------------------------------
-  // STEP 3: Extract IDs from the big block (potential subfolders/first file)
+  // STEP 4: Extract IDs from the big block (potential subfolders/first file)
   // -------------------------------------------------------------------------
   const candidateIdsInBlock = parseIdsFromBlock(bigScriptBlock);
   const uniqueBlockIds = Array.from(new Set(candidateIdsInBlock));
@@ -466,7 +555,7 @@ export async function scrapePublicFolder(
   );
 
   // -------------------------------------------------------------------------
-  // STEP 4: Extract IDs from the tail HTML (after the big block)
+  // STEP 5: Extract IDs from the tail HTML (after the big block)
   // -------------------------------------------------------------------------
   const tailHtml = html.slice(bigBlockEndIndex);
   const candidateIdsInTail = parseIdsFromBlock(tailHtml);
@@ -477,52 +566,45 @@ export async function scrapePublicFolder(
   );
 
   // -------------------------------------------------------------------------
-  // STEP 5: Verify block IDs as folders
+  // STEP 6: Verify ALL candidate IDs (block + tail) as folders
   // -------------------------------------------------------------------------
-  const { validFolders, invalidIds: invalidFolderIds, detectedFiles } =
-    await verifyFolderIds(uniqueBlockIds);
+  const allCandidateIdsArray = Array.from(
+    new Set([...uniqueBlockIds, ...uniqueTailIds])
+  );
+
+  console.log(
+    `[publicScrape] Verifying ${allCandidateIdsArray.length} candidate IDs as potential folders...`
+  );
+
+  const {
+    validFolders,
+    invalidIds: nonFolderIds,
+    detectedFiles,
+  } = await verifyFolderIds(allCandidateIdsArray, folderNamesFromRawResponse);
 
   // -------------------------------------------------------------------------
-  // STEP 6: Build file candidate set
+  // STEP 7: Build file candidate set (IDs still not confirmed as folders/files)
   // -------------------------------------------------------------------------
   const allFileCandidateIds = new Set<string>();
 
-  // If no valid folders were found, treat block IDs as potential file IDs
-  if (validFolders.length === 0) {
-    for (const id of uniqueBlockIds) {
-      allFileCandidateIds.add(id);
-    }
-    console.log(
-      `[publicScrape] No valid folders in block → treating ${uniqueBlockIds.length} block IDs as file candidates`
-    );
-  } else {
-    // Some block IDs were not valid folders - they might be files (first file ID case)
-    for (const id of invalidFolderIds) {
-      allFileCandidateIds.add(id);
-    }
-    if (invalidFolderIds.length > 0) {
-      console.log(
-        `[publicScrape] ${invalidFolderIds.length} invalid folder IDs added to file candidates`
-      );
-    }
-  }
-
-  // All tail IDs are potential files
-  for (const id of uniqueTailIds) {
+  for (const id of nonFolderIds) {
     allFileCandidateIds.add(id);
   }
 
   console.log(
-    `[publicScrape] Total file candidates: ${allFileCandidateIds.size}`
+    `[publicScrape] Total file candidates after folder verification: ${allFileCandidateIds.size}`
   );
 
   // -------------------------------------------------------------------------
-  // STEP 7: Verify file candidates
+  // STEP 8: Verify file candidates via file view
   // -------------------------------------------------------------------------
-  const validFiles = await verifyFileIds(Array.from(allFileCandidateIds));
+  const validFiles = await verifyFileIds(
+    Array.from(allFileCandidateIds),
+    folderNamesFromRawResponse
+  );
 
   // -------------------------------------------------------------------------
-  // STEP 8: Combine results
+  // STEP 9: Combine results
   // -------------------------------------------------------------------------
   const files: DriveFile[] = [...validFolders, ...detectedFiles, ...validFiles];
 
