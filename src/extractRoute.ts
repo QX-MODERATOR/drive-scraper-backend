@@ -278,7 +278,7 @@ extractRouter.post(
           file.id,
           file.mimeType,
           file.viewUrl,
-          file.downloadUrl,
+          typeof file.downloadUrl === "string" ? file.downloadUrl : "",
         ]);
       }
 
