@@ -35,7 +35,7 @@ const buildErrorResponse = (
  * Only allows valid Google Drive folder URLs
  */
 function validateFolderUrl(folderUrl: string): boolean {
-  const isValid = /^https:\/\/drive\.google\.com\/drive\/(u\/\d+\/)?folders\/[A-Za-z0-9_-]+$/.test(folderUrl);
+  const isValid = /^https:\/\/drive\.google\.com\/drive\/(u\/\d+\/)?folders\/[A-Za-z0-9_-]+(?:\?[^\s]*)?$/.test(folderUrl);
   return isValid;
 }
 
