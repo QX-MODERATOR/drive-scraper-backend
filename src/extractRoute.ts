@@ -30,6 +30,15 @@ const buildErrorResponse = (
   },
 });
 
+/**
+ * Validate folder URL to prevent SSRF attacks
+ * Only allows valid Google Drive folder URLs
+ */
+function validateFolderUrl(folderUrl: string): boolean {
+  const isValid = /^https:\/\/drive\.google\.com\/drive\/(u\/\d+\/)?folders\/[A-Za-z0-9_-]+$/.test(folderUrl);
+  return isValid;
+}
+
 const handleSingleFileLink = async (
   fileUrl: string,
   res: Response
@@ -140,10 +149,17 @@ extractRouter.post(
       return res.status(400).json(errorBody);
     }
 
+    // SSRF Prevention: Validate folder URL format
+    if (!validateFolderUrl(folderUrl)) {
+      const errorBody = buildErrorResponse(
+        "INVALID_FOLDER_URL",
+        "Invalid Google Drive folder URL format."
+      );
+      return res.status(400).json(errorBody);
+    }
+
     let folderId: string;
     try {
-      // If this is a file URL like https://drive.google.com/file/d/FILE_ID/view,
-      // handle it as a single-file extraction instead of a folder scrape.
       try {
         const url = new URL(folderUrl);
         if (/\/file\/d\/[a-zA-Z0-9_-]{5,}\//.test(url.pathname)) {
@@ -173,15 +189,9 @@ extractRouter.post(
     try {
       const result = await scrapePublicFolder(folderId);
 
-      // eslint-disable-next-line no-console
-      console.log(
-        "[extractRoute] scrapePublicFolder result",
-        folderId,
-        "files:",
-        result.files.length,
-        "isEmptyFolder:",
-        result.isEmptyFolder
-      );
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[extractRoute] scrapePublicFolder result: folderId=${folderId}, files=${result.files.length}, isEmptyFolder=${result.isEmptyFolder}`);
+      }
 
       const base: Omit<ExtractFilesResponse, "files"> = {
         folderId,
@@ -206,7 +216,6 @@ extractRouter.post(
         return res.status(200).json(responseBody);
       }
 
-      // HTML loaded but we couldn't parse any files.
       const responseBody: ExtractFilesResponse = {
         ...base,
         files: [],
@@ -259,15 +268,10 @@ extractRouter.post(
     }
 
     try {
-      // Create a new workbook
       const workbook = XLSX.utils.book_new();
-
-      // Prepare data for the worksheet
-      // Headers
       const headers = ["Name", "ID", "MIME Type", "View URL", "Download URL"];
       const data = [headers];
 
-      // Add file rows
       for (const file of files) {
         data.push([
           file.name,
@@ -278,52 +282,38 @@ extractRouter.post(
         ]);
       }
 
-      // Create worksheet from data
       const worksheet = XLSX.utils.aoa_to_sheet(data);
-
-      // Set column widths for better readability
       worksheet["!cols"] = [
-        { wch: 30 }, // Name
-        { wch: 40 }, // ID
-        { wch: 50 }, // MIME Type
-        { wch: 60 }, // View URL
-        { wch: 60 }, // Download URL
+        { wch: 30 },
+        { wch: 40 },
+        { wch: 50 },
+        { wch: 60 },
+        { wch: 60 },
       ];
 
-      // Add worksheet to workbook
       XLSX.utils.book_append_sheet(workbook, worksheet, "Files");
 
-      // Generate XLSX file as buffer
       const xlsxBuffer = XLSX.write(workbook, {
         type: "buffer",
         bookType: "xlsx",
         cellStyles: true,
       });
 
-      // Set proper headers for XLSX file
       const filename = `drive-files-${Date.now()}.xlsx`;
       
-      // Set Content-Type first (must be XLSX MIME type)
       res.setHeader(
         "Content-Type",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
-      
-      // Set Content-Disposition with proper encoding for filename
-      // Use both filename and filename* for maximum browser compatibility
       res.setHeader(
         "Content-Disposition",
         `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
       );
-      
       res.setHeader("Content-Length", xlsxBuffer.length.toString());
-      
-      // Ensure no caching that might interfere
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Expires", "0");
 
-      // Send the file
       return res.status(200).send(xlsxBuffer);
     } catch (error: unknown) {
       console.error("[extractRoute] Excel export error:", error);
@@ -335,4 +325,3 @@ extractRouter.post(
     }
   }
 );
-

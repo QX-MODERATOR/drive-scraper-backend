@@ -3,7 +3,7 @@ export interface DriveFile {
   name: string;
   mimeType: string;
   viewUrl: string;
-  downloadUrl: string;
+  downloadUrl: string | null;
 }
 
 export interface ExtractFilesResponse {
