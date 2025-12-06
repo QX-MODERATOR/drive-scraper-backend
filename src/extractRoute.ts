@@ -32,11 +32,64 @@ const buildErrorResponse = (
 
 /**
  * Validate folder URL to prevent SSRF attacks
- * Only allows valid Google Drive folder URLs
+ * Only allows valid Google Drive folder URLs or folder IDs
+ * Uses the same extraction logic to ensure consistency
  */
 function validateFolderUrl(folderUrl: string): boolean {
-  const isValid = /^https:\/\/drive\.google\.com\/drive\/(u\/\d+\/)?folders\/[A-Za-z0-9_-]+(?:\?[^\s]*)?$/.test(folderUrl);
-  return isValid;
+  if (!folderUrl || typeof folderUrl !== "string") {
+    return false;
+  }
+
+  const trimmed = folderUrl.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  // Allow bare folder IDs (alphanumeric, dashes, underscores, at least 10 chars)
+  if (/^[A-Za-z0-9_-]{10,}$/.test(trimmed) && !trimmed.includes("://")) {
+    return true;
+  }
+
+  // Try to parse as URL and check if it's a Google Drive URL
+  try {
+    const url = new URL(trimmed);
+    const hostname = url.hostname.toLowerCase();
+    
+    // Only accept Google Drive hostnames
+    if (hostname !== "drive.google.com" && hostname !== "docs.google.com") {
+      return false;
+    }
+
+    // Check if we can extract a folder ID using the same patterns as extractFolderId
+    const patterns = [
+      /\/u\/\d+\/folders\/([A-Za-z0-9_-]+)/,        // /u/1/folders/{id}
+      /\/folders\/([A-Za-z0-9_-]+)/,                // /folders/{id}
+      /folderview\?id=([A-Za-z0-9_-]+)/,            // folderview?id={id}
+      /open\?id=([A-Za-z0-9_-]+)/,                  // open?id={id}
+      /[?&]id=([A-Za-z0-9_-]+)/,                    // ?id={id} or &id={id}
+    ];
+
+    const path = url.pathname;
+    const search = url.search;
+
+    for (const pattern of patterns) {
+      const match = (path + search).match(pattern);
+      if (match && match[1] && match[1].length >= 10) {
+        return true;
+      }
+    }
+
+    // Also check query params directly
+    const idParam = url.searchParams.get("id");
+    if (idParam && /^[A-Za-z0-9_-]{10,}$/.test(idParam)) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    // Not a valid URL, but might be a bare folder ID (already checked above)
+    return false;
+  }
 }
 
 const handleSingleFileLink = async (

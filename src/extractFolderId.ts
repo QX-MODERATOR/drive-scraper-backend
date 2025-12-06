@@ -7,18 +7,18 @@ export class InvalidFolderUrlError extends Error {
   }
 }
 
-const FOLDERS_PATH_REGEX = /\/folders\/([a-zA-Z0-9_-]+)/;
-
 export const extractFolderId = (folderUrl: string): string => {
   if (!folderUrl || typeof folderUrl !== "string") {
     throw new InvalidFolderUrlError("Folder URL must be a non-empty string.");
   }
 
   const trimmed = folderUrl.trim();
+  if (!trimmed) {
+    throw new InvalidFolderUrlError("Folder URL must be a non-empty string.");
+  }
 
-  // Allow users to provide a bare folder ID directly, e.g. "1BH3r_...Rvvu4BoSi"
-  const bareIdRegex = /^[a-zA-Z0-9_-]+$/;
-  if (bareIdRegex.test(trimmed) && !trimmed.includes("://")) {
+  // Allow users to provide a bare folder ID directly (alphanumeric, dashes, underscores, at least 10 chars)
+  if (/^[A-Za-z0-9_-]{10,}$/.test(trimmed) && !trimmed.includes("://")) {
     return trimmed;
   }
 
@@ -41,6 +41,7 @@ export const extractFolderId = (folderUrl: string): string => {
   }
 
   const path = url.pathname;
+  const search = url.search;
 
   // If this is a file URL like:
   //   https://drive.google.com/file/d/FILE_ID/view
@@ -53,25 +54,35 @@ export const extractFolderId = (folderUrl: string): string => {
     );
   }
 
-  // 1) URL patterns like:
-  //    https://drive.google.com/drive/folders/ABC123
-  //    https://drive.google.com/drive/u/1/folders/ABC123
-  //    https://drive.google.com/drive/folders/ABC123?resourcekey=xyz
-  const folderMatch = FOLDERS_PATH_REGEX.exec(path);
-  if (folderMatch && folderMatch[1]) {
-    return folderMatch[1];
+  // Try ALL known Google Drive folder formats (order matters - most specific first)
+  const patterns = [
+    /\/u\/\d+\/folders\/([A-Za-z0-9_-]+)/,        // /u/1/folders/{id} or /u/0/folders/{id}
+    /\/folders\/([A-Za-z0-9_-]+)/,                // /folders/{id}
+    /folderview\?id=([A-Za-z0-9_-]+)/,            // folderview?id={id}
+    /open\?id=([A-Za-z0-9_-]+)/,                  // open?id={id}
+    /[?&]id=([A-Za-z0-9_-]+)/,                    // ?id={id} or &id={id} (catch-all for query params)
+  ];
+
+  for (const pattern of patterns) {
+    const match = (path + search).match(pattern);
+    if (match && match[1] && match[1].length >= 10) {
+      return match[1];
+    }
   }
 
-  // 2) URL patterns with `id` query parameter:
-  //    https://drive.google.com/open?id=ABC123
-  //    https://drive.google.com/folderview?id=ABC123#...
+  // Also check query params directly as fallback
   const idParam = url.searchParams.get("id");
-  if (idParam) {
+  if (idParam && /^[A-Za-z0-9_-]{10,}$/.test(idParam)) {
     return idParam;
   }
 
   throw new InvalidFolderUrlError(
-    "Could not extract folder ID from the provided URL."
+    "Could not extract folder ID from the provided URL. Supported formats:\n" +
+    "- https://drive.google.com/drive/folders/FOLDER_ID\n" +
+    "- https://drive.google.com/drive/u/1/folders/FOLDER_ID\n" +
+    "- https://drive.google.com/folderview?id=FOLDER_ID\n" +
+    "- https://drive.google.com/open?id=FOLDER_ID\n" +
+    "- Or just the folder ID"
   );
 };
 
